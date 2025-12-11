@@ -4,7 +4,9 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+
 import '../services/profile_services.dart';
+import '../utils/responsive.dart';
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
@@ -54,7 +56,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
         _bioCtrl.text = (row['bio'] ?? '') as String;
         _dobCtrl.text = row['date_of_birth'] is String
             ? (row['date_of_birth'] as String)
-            : (row['date_of_birth'] != null ? row['date_of_birth'].toString().split(' ').first : '');
+            : (row['date_of_birth'] != null
+            ? row['date_of_birth'].toString().split(' ').first
+            : '');
         _cityCtrl.text = (row['city'] ?? '') as String;
         _stateCtrl.text = (row['state'] ?? '') as String;
         _countryCtrl.text = (row['country'] ?? '') as String;
@@ -69,9 +73,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
       if (kDebugMode) {
         debugPrint('[EditProfilePage._loadCurrentUserRow] error: $e\n$st');
       }
-      // show a minimal error to user
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to load profile')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Failed to load profile')));
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -96,7 +100,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       String? avatarUrl = _profilePicUrl;
 
       if (_pickedImageBytes != null) {
-        // Get current user id from service's Supabase client via ProfileServices
+        // Use ProfileServices to get current user's auth_id (clean dependency)
         final userRow = await ProfileServices.instance.getCurrentUserRow();
         final userId = userRow?['auth_id']?.toString();
         if (userId == null) throw Exception('Not authenticated');
@@ -128,7 +132,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
       if (updatedRow == null) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to update profile')));
       } else {
-        // success — pop true so callers can refresh
         if (mounted) Navigator.pop(context, true);
       }
     } catch (e, st) {
@@ -152,23 +155,31 @@ class _EditProfilePageState extends State<EditProfilePage> {
     super.dispose();
   }
 
-  Widget _avatarWidget() {
+  Widget _avatarWidget(Responsive R) {
     final avatar = _pickedImageBytes != null
         ? Image.memory(_pickedImageBytes!, fit: BoxFit.cover)
         : (_profilePicUrl != null && _profilePicUrl!.isNotEmpty
         ? Image.network(_profilePicUrl!, fit: BoxFit.cover)
-        : const Icon(Icons.person, size: 48));
+        : Icon(Icons.person, size: R.avatarSize() * 0.5));
 
     return ClipOval(
-      child: SizedBox(width: 96, height: 96, child: avatar),
+      child: SizedBox(
+        width: R.avatarSize(),
+        height: R.avatarSize(),
+        child: avatar,
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final R = Responsive(context);
+
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
+    final maxWidth = R.isDesktop ? 800.0 : (R.isTablet ? 600.0 : double.infinity);
 
     return Scaffold(
       appBar: AppBar(
@@ -177,106 +188,123 @@ class _EditProfilePageState extends State<EditProfilePage> {
           TextButton(
             onPressed: _saving ? null : _save,
             child: _saving
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator())
-                : const Text('Save', style: TextStyle(color: Colors.white)),
+                ? SizedBox(width: R.scaledText(18), height: R.scaledText(18), child: const CircularProgressIndicator())
+                : Text('Save', style: TextStyle(color: Colors.white, fontSize: R.scaledText(14))),
           )
         ],
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              children: [
-                GestureDetector(
-                  onTap: _pickImage,
-                  child: Stack(
-                    alignment: Alignment.bottomRight,
-                    children: [
-                      _avatarWidget(),
-                      Container(
-                        decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(12)),
-                        padding: const EdgeInsets.all(6),
-                        child: const Icon(Icons.edit, color: Colors.white, size: 16),
-                      )
-                    ],
-                  ),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: maxWidth),
+            child: SingleChildScrollView(
+              padding: EdgeInsets.all(R.wp(4)),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  children: [
+                    GestureDetector(
+                      onTap: _pickImage,
+                      child: Stack(
+                        alignment: Alignment.bottomRight,
+                        children: [
+                          _avatarWidget(R),
+                          Container(
+                            decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(12)),
+                            padding: EdgeInsets.all(R.wp(2)),
+                            child: Icon(Icons.edit, color: Colors.white, size: R.scaledText(14)),
+                          )
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: R.hp(1.2)),
+                    TextFormField(
+                      controller: _usernameCtrl,
+                      decoration: InputDecoration(labelText: 'Username', contentPadding: EdgeInsets.symmetric(horizontal: R.wp(2), vertical: R.hp(1))),
+                      validator: (v) {
+                        if (v == null || v.trim().isEmpty) return 'Username required';
+                        return null;
+                      },
+                      style: TextStyle(fontSize: R.scaledText(14)),
+                    ),
+                    SizedBox(height: R.hp(0.8)),
+                    TextFormField(
+                      controller: _fullNameCtrl,
+                      decoration: InputDecoration(labelText: 'Full name', contentPadding: EdgeInsets.symmetric(horizontal: R.wp(2), vertical: R.hp(1))),
+                      style: TextStyle(fontSize: R.scaledText(14)),
+                    ),
+                    SizedBox(height: R.hp(0.8)),
+                    TextFormField(
+                      controller: _emailCtrl,
+                      decoration: InputDecoration(labelText: 'Email', contentPadding: EdgeInsets.symmetric(horizontal: R.wp(2), vertical: R.hp(1))),
+                      keyboardType: TextInputType.emailAddress,
+                      validator: (v) {
+                        if (v == null || v.trim().isEmpty) return 'Email required';
+                        if (!v.contains('@')) return 'Invalid email';
+                        return null;
+                      },
+                      style: TextStyle(fontSize: R.scaledText(14)),
+                    ),
+                    SizedBox(height: R.hp(0.8)),
+                    TextFormField(
+                      controller: _bioCtrl,
+                      decoration: InputDecoration(labelText: 'Bio', contentPadding: EdgeInsets.symmetric(horizontal: R.wp(2), vertical: R.hp(1))),
+                      maxLines: 3,
+                      style: TextStyle(fontSize: R.scaledText(14)),
+                    ),
+                    SizedBox(height: R.hp(0.8)),
+                    TextFormField(
+                      controller: _dobCtrl,
+                      decoration: InputDecoration(labelText: 'Date of birth (YYYY-MM-DD)', contentPadding: EdgeInsets.symmetric(horizontal: R.wp(2), vertical: R.hp(1))),
+                      style: TextStyle(fontSize: R.scaledText(14)),
+                    ),
+                    SizedBox(height: R.hp(0.8)),
+                    TextFormField(
+                      controller: _cityCtrl,
+                      decoration: InputDecoration(labelText: 'City', contentPadding: EdgeInsets.symmetric(horizontal: R.wp(2), vertical: R.hp(1))),
+                      style: TextStyle(fontSize: R.scaledText(14)),
+                    ),
+                    SizedBox(height: R.hp(0.8)),
+                    TextFormField(
+                      controller: _stateCtrl,
+                      decoration: InputDecoration(labelText: 'State', contentPadding: EdgeInsets.symmetric(horizontal: R.wp(2), vertical: R.hp(1))),
+                      style: TextStyle(fontSize: R.scaledText(14)),
+                    ),
+                    SizedBox(height: R.hp(0.8)),
+                    TextFormField(
+                      controller: _countryCtrl,
+                      decoration: InputDecoration(labelText: 'Country', contentPadding: EdgeInsets.symmetric(horizontal: R.wp(2), vertical: R.hp(1))),
+                      style: TextStyle(fontSize: R.scaledText(14)),
+                    ),
+                    SizedBox(height: R.hp(1.2)),
+                    SwitchListTile(
+                      title: Text('Active status', style: TextStyle(fontSize: R.scaledText(14))),
+                      value: _activeStatus,
+                      onChanged: (v) => setState(() => _activeStatus = v),
+                    ),
+                    SwitchListTile(
+                      title: Text('Private account', style: TextStyle(fontSize: R.scaledText(14))),
+                      value: _isPrivate,
+                      onChanged: (v) => setState(() => _isPrivate = v),
+                    ),
+                    SwitchListTile(
+                      title: Text('Verified (admin only?)', style: TextStyle(fontSize: R.scaledText(14))),
+                      value: _isVarified,
+                      onChanged: (v) => setState(() => _isVarified = v),
+                    ),
+                    SizedBox(height: R.hp(2)),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _saving ? null : _save,
+                        icon: Icon(Icons.save, size: R.scaledText(16)),
+                        label: Text('Save profile', style: TextStyle(fontSize: R.scaledText(15))),
+                        style: ElevatedButton.styleFrom(padding: EdgeInsets.symmetric(vertical: R.hp(1.4))),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _usernameCtrl,
-                  decoration: const InputDecoration(labelText: 'Username'),
-                  validator: (v) {
-                    if (v == null || v.trim().isEmpty) return 'Username required';
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _fullNameCtrl,
-                  decoration: const InputDecoration(labelText: 'Full name'),
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _emailCtrl,
-                  decoration: const InputDecoration(labelText: 'Email'),
-                  keyboardType: TextInputType.emailAddress,
-                  validator: (v) {
-                    if (v == null || v.trim().isEmpty) return 'Email required';
-                    if (!v.contains('@')) return 'Invalid email';
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _bioCtrl,
-                  decoration: const InputDecoration(labelText: 'Bio'),
-                  maxLines: 3,
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _dobCtrl,
-                  decoration: const InputDecoration(labelText: 'Date of birth (YYYY-MM-DD)'),
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _cityCtrl,
-                  decoration: const InputDecoration(labelText: 'City'),
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _stateCtrl,
-                  decoration: const InputDecoration(labelText: 'State'),
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: _countryCtrl,
-                  decoration: const InputDecoration(labelText: 'Country'),
-                ),
-                const SizedBox(height: 12),
-                SwitchListTile(
-                  title: const Text('Active status'),
-                  value: _activeStatus,
-                  onChanged: (v) => setState(() => _activeStatus = v),
-                ),
-                SwitchListTile(
-                  title: const Text('Private account'),
-                  value: _isPrivate,
-                  onChanged: (v) => setState(() => _isPrivate = v),
-                ),
-                SwitchListTile(
-                  title: const Text('Verified (admin only?)'),
-                  value: _isVarified,
-                  onChanged: (v) => setState(() => _isVarified = v),
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton.icon(
-                  onPressed: _saving ? null : _save,
-                  icon: const Icon(Icons.save),
-                  label: const Text('Save profile'),
-                ),
-              ],
+              ),
             ),
           ),
         ),

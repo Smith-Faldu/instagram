@@ -1,3 +1,4 @@
+// lib/signup.dart
 import 'package:flutter/material.dart';
 
 import '../services/auth_gate.dart';
@@ -55,6 +56,9 @@ class _SignUpPageState extends State<SignUpPage> {
   }
 
   Future<void> _submit() async {
+    // basic guard
+    if (_submitting) return;
+
     setState(() {
       _submitting = true;
       _error = null;
@@ -68,17 +72,22 @@ class _SignUpPageState extends State<SignUpPage> {
       });
       return;
     }
+
     try {
+      // NOTE: use backend field names expected by your DB / RPC
+      // I changed 'dob' -> 'date_of_birth' because your DB uses date_of_birth
       await AuthService.instance.signUp(
         email: _emailController.text.trim(),
         password: _passwordController.text,
         data: {
           'username': _usernameController.text.trim(),
           'full_name': _fullNameController.text.trim(),
-          'dob': _formatDate(_selectedDob!),
+          'date_of_birth': _formatDate(_selectedDob!), // <- important
         },
       );
+
       if (!mounted) return;
+      // show success and navigate back to login — your original popped as well
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Account created. Check your email to confirm.'),
@@ -86,6 +95,7 @@ class _SignUpPageState extends State<SignUpPage> {
       );
       Navigator.pop(context);
     } catch (e) {
+      // try to present useful error text (AuthService likely throws readable messages)
       setState(() {
         _error = e.toString();
       });
@@ -100,6 +110,7 @@ class _SignUpPageState extends State<SignUpPage> {
 
   @override
   Widget build(BuildContext context) {
+    final disabled = _submitting;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Sign up'),
@@ -172,10 +183,11 @@ class _SignUpPageState extends State<SignUpPage> {
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
                     icon: const Icon(Icons.calendar_today),
-                    onPressed: _pickDob,
+                    onPressed: disabled ? null : _pickDob,
                   ),
                 ),
-                onTap: _pickDob,
+                onTap: disabled ? null : _pickDob,
+                validator: (_) => _selectedDob == null ? 'Pick your date of birth' : null,
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -189,13 +201,13 @@ class _SignUpPageState extends State<SignUpPage> {
               ),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: _submitting ? null : _submit,
+                onPressed: disabled ? null : _submit,
                 child: _submitting
                     ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
                     : const Text('Create account'),
               ),
               const SizedBox(height: 12),

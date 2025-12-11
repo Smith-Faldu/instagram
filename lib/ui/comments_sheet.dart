@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/post_service.dart';
+import '../utils/responsive.dart';
 
 class CommentsSheet extends StatefulWidget {
   final int postId;
@@ -26,7 +27,9 @@ class _CommentsSheetState extends State<CommentsSheet> {
   }
 
   Future<void> _load() async {
-    setState(() { _loading = true; });
+    setState(() {
+      _loading = true;
+    });
     final list = await PostService.instance.getComments(postId: widget.postId);
     if (!mounted) return;
     setState(() {
@@ -42,61 +45,99 @@ class _CommentsSheetState extends State<CommentsSheet> {
 
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please log in to comment')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Please log in to comment')));
+      }
       return;
     }
 
-    setState(() { _isSubmitting = true; });
+    setState(() {
+      _isSubmitting = true;
+    });
 
     try {
-      final created = await PostService.instance.addComment(postId: widget.postId, text: txt);
+      final created =
+      await PostService.instance.addComment(postId: widget.postId, text: txt);
       if (created != null) {
+        if (!mounted) return;
         setState(() {
           _comments.add(created);
           _controller.clear();
         });
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not add comment')));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not add comment')));
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      if (mounted) ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
-      if (mounted) setState(() { _isSubmitting = false; });
+      if (mounted) setState(() {
+        _isSubmitting = false;
+      });
     }
   }
 
-  Widget _row(Map<String, dynamic> m) {
+  Widget _row(Map<String, dynamic> m, Responsive R) {
     final commenter = m['commenter'] as Map<String, dynamic>?;
-    final username = commenter != null ? (commenter['username'] ?? '') as String : ((m['commenter_id'] ?? '') as String).substring(0,6);
+    final username = commenter != null
+        ? (commenter['username'] ?? '') as String
+        : ((m['commenter_id'] ?? '') as String).substring(0, 6);
     final pic = commenter != null ? (commenter['profile_pic'] ?? '') as String : '';
     final createdRaw = m['created_at'];
     DateTime dt;
-    if (createdRaw is String) dt = DateTime.parse(createdRaw);
-    else if (createdRaw is DateTime) dt = createdRaw;
-    else dt = DateTime.now();
+    if (createdRaw is String) {
+      dt = DateTime.tryParse(createdRaw) ?? DateTime.now();
+    } else if (createdRaw is DateTime) {
+      dt = createdRaw;
+    } else {
+      dt = DateTime.now();
+    }
+
+    final avatarRadius = R.avatarSize() / 2;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical:8.0, horizontal:12),
+      padding: EdgeInsets.symmetric(vertical: R.hp(0.6), horizontal: R.wp(3)),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           CircleAvatar(
-            radius: 18,
+            radius: avatarRadius,
             backgroundImage: pic.isNotEmpty ? NetworkImage(pic) : null,
-            child: pic.isEmpty ? const Icon(Icons.person, size: 18) : null,
+            child: pic.isEmpty ? Icon(Icons.person, size: avatarRadius) : null,
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: R.wp(3)),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(children: [
-                  Text(username, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(width: 8),
-                  Text(DateFormat('dd MMM, hh:mm a').format(dt), style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                  Flexible(
+                    child: Text(
+                      username,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: R.scaledText(14),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  SizedBox(width: R.wp(2)),
+                  Text(
+                    DateFormat('dd MMM, hh:mm a').format(dt),
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: R.scaledText(11),
+                    ),
+                  ),
                 ]),
-                const SizedBox(height: 4),
-                Text(m['comment'] ?? ''),
+                SizedBox(height: R.hp(0.5)),
+                Text(
+                  m['comment'] ?? '',
+                  style: TextStyle(fontSize: R.scaledText(14)),
+                ),
               ],
             ),
           ),
@@ -113,70 +154,116 @@ class _CommentsSheetState extends State<CommentsSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final maxHeight = MediaQuery.of(context).size.height * 0.75;
+    final R = Responsive(context);
+
+    // Limit height to 75% of screen on phones, more on larger screens
+    final maxHeight = R.isPhone ? R.hp(75) : (R.isTablet ? R.hp(80) : R.hp(85));
+
     return SafeArea(
-      child: Container(
-        constraints: BoxConstraints(maxHeight: maxHeight),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // header
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical:12.0, horizontal:12),
-              child: Row(
-                children: [
-                  const Text('Comments', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-                  const Spacer(),
-                  IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.of(context).pop()),
-                ],
-              ),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: maxHeight,
+            maxWidth: R.isDesktop ? 800 : double.infinity,
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
             ),
-
-            // list
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _comments.isEmpty
-                  ? const Center(child: Text('No comments yet'))
-                  : ListView.builder(
-                padding: const EdgeInsets.only(bottom:12),
-                itemCount: _comments.length,
-                itemBuilder: (_, i) => _row(_comments[i]),
-              ),
-            ),
-
-            const Divider(height: 1),
-            // composer
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12,8,12,12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _controller,
-                      minLines: 1,
-                      maxLines: 4,
-                      decoration: const InputDecoration(
-                        hintText: 'Add a comment...',
-                        border: InputBorder.none,
-                        filled: true,
-                        fillColor: Color(0xFFF2F3F5),
-                        contentPadding: EdgeInsets.symmetric(horizontal:12, vertical:10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // header
+                Padding(
+                  padding: EdgeInsets.symmetric(
+                    vertical: R.hp(1.2),
+                    horizontal: R.wp(3),
+                  ),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Comments',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: R.scaledText(16),
+                        ),
                       ),
-                    ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width:8),
-                  SizedBox(
-                    height: 40,
-                    child: ElevatedButton(
-                      onPressed: _isSubmitting ? null : _send,
-                      child: _isSubmitting ? const SizedBox(width:16, height:16, child: CircularProgressIndicator(strokeWidth:2)) : const Text('Post'),
+                ),
+
+                // list
+                Expanded(
+                  child: _loading
+                      ? const Center(child: CircularProgressIndicator())
+                      : _comments.isEmpty
+                      ? Center(
+                    child: Text(
+                      'No comments yet',
+                      style: TextStyle(fontSize: R.scaledText(14)),
                     ),
+                  )
+                      : ListView.builder(
+                    padding: EdgeInsets.only(bottom: R.hp(1.5)),
+                    itemCount: _comments.length,
+                    itemBuilder: (_, i) => _row(_comments[i], R),
                   ),
-                ],
-              ),
+                ),
+
+                const Divider(height: 1),
+
+                // composer
+                Padding(
+                  padding: EdgeInsets.fromLTRB(R.wp(3), R.hp(0.8), R.wp(3), R.hp(1.2)),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF2F3F5),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: EdgeInsets.symmetric(horizontal: R.wp(2)),
+                          child: TextField(
+                            controller: _controller,
+                            minLines: 1,
+                            maxLines: 4,
+                            decoration: InputDecoration(
+                              hintText: 'Add a comment...',
+                              border: InputBorder.none,
+                              hintStyle: TextStyle(fontSize: R.scaledText(14)),
+                            ),
+                            style: TextStyle(fontSize: R.scaledText(14)),
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: R.wp(2)),
+                      SizedBox(
+                        height: R.buttonHeight(),
+                        child: ElevatedButton(
+                          onPressed: _isSubmitting ? null : _send,
+                          style: ElevatedButton.styleFrom(
+                            padding: EdgeInsets.symmetric(horizontal: R.wp(3)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            minimumSize: Size(R.wp(12), R.buttonHeight()),
+                          ),
+                          child: _isSubmitting
+                              ? SizedBox(width: R.wp(4), height: R.wp(4), child: const CircularProgressIndicator(strokeWidth: 2))
+                              : Text('Post', style: TextStyle(fontSize: R.scaledText(14))),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );

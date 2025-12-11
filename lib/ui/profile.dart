@@ -22,7 +22,7 @@ class ProfilePage extends StatefulWidget {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
-  late final Future<ProfileData> _profileFuture;
+  late Future<ProfileData> _profileFuture;
 
   /// True when this page is showing the logged-in user's own profile.
   late final bool _isSelfProfile;
@@ -104,6 +104,19 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  // Call this after edit profile returns true to re-fetch profile data.
+  void _refreshProfile() {
+    setState(() {
+      if (_profileOwnerId != null) {
+        _profileFuture =
+            ProfileService.instance.getProfileByAuthId(_profileOwnerId!);
+      } else if (_currentUserId != null) {
+        _profileFuture =
+            ProfileService.instance.getProfileByAuthId(_currentUserId!);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -174,6 +187,9 @@ class _ProfilePageState extends State<ProfilePage> {
                             backgroundImage: user.profilePicUrl.isNotEmpty
                                 ? NetworkImage(user.profilePicUrl)
                                 : null,
+                            onBackgroundImageError: (_, __) {
+                              // swallow image errors; icon will remain
+                            },
                             child: user.profilePicUrl.isEmpty
                                 ? const Icon(Icons.person, size: 42)
                                 : null,
@@ -201,13 +217,16 @@ class _ProfilePageState extends State<ProfilePage> {
                           ),
                           _Stat(
                             label: 'Following',
-                            valueWidget: Text(_formatCount(user.followingCount)),
+                            valueWidget:
+                            Text(_formatCount(user.followingCount)),
                           ),
                         ],
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        user.fullName.isNotEmpty ? user.fullName : user.username,
+                        user.fullName.isNotEmpty
+                            ? user.fullName
+                            : user.username,
                         style: const TextStyle(
                           fontWeight: FontWeight.w700,
                           fontSize: 16,
@@ -227,14 +246,17 @@ class _ProfilePageState extends State<ProfilePage> {
                           Expanded(
                             child: _isSelfProfile
                                 ? ElevatedButton(
-                              onPressed: () {
-                                // lightweight placeholder Edit profile screen (won't crash)
-                                Navigator.push(
+                              onPressed: () async {
+                                // open EditProfilePage and refresh if user saved changes
+                                final result = await Navigator.push<bool>(
                                   context,
                                   MaterialPageRoute(
                                     builder: (_) => const EditProfilePage(),
                                   ),
                                 );
+                                if (result == true) {
+                                  _refreshProfile();
+                                }
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.grey[300],
@@ -243,7 +265,8 @@ class _ProfilePageState extends State<ProfilePage> {
                               ),
                               child: const Text('Edit profile'),
                             )
-                                : _profileOwnerId == null || _currentUserId == null
+                                : _profileOwnerId == null ||
+                                _currentUserId == null
                                 ? ElevatedButton(
                               onPressed: null,
                               style: ElevatedButton.styleFrom(
@@ -254,7 +277,8 @@ class _ProfilePageState extends State<ProfilePage> {
                               child: const Text('...'),
                             )
                                 : StreamBuilder<bool>(
-                              stream: ProfileService.instance.isFollowingStream(
+                              stream: ProfileService.instance
+                                  .isFollowingStream(
                                 currentUserId: _currentUserId!,
                                 targetUserId: _profileOwnerId!,
                               ),
@@ -264,8 +288,10 @@ class _ProfilePageState extends State<ProfilePage> {
                                     ConnectionState.waiting) {
                                   return ElevatedButton(
                                     onPressed: null,
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.grey[300],
+                                    style:
+                                    ElevatedButton.styleFrom(
+                                      backgroundColor:
+                                      Colors.grey[300],
                                       foregroundColor: Colors.black,
                                       elevation: 0,
                                     ),
@@ -277,7 +303,8 @@ class _ProfilePageState extends State<ProfilePage> {
 
                                 return ElevatedButton(
                                   onPressed: () =>
-                                      _toggleFollowFromStream(isFollowing),
+                                      _toggleFollowFromStream(
+                                          isFollowing),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: isFollowing
                                         ? Colors.grey[300]
@@ -287,8 +314,8 @@ class _ProfilePageState extends State<ProfilePage> {
                                         : Colors.white,
                                     elevation: 0,
                                   ),
-                                  child:
-                                  Text(isFollowing ? 'Following' : 'Follow'),
+                                  child: Text(
+                                      isFollowing ? 'Following' : 'Follow'),
                                 );
                               },
                             ),
@@ -319,9 +346,12 @@ class _ProfilePageState extends State<ProfilePage> {
                               child: OutlinedButton(
                                 onPressed: () {
                                   // Open chat screen with the profile owner
-                                  if (_currentUserId == null || _profileOwnerId == null) {
+                                  if (_currentUserId == null ||
+                                      _profileOwnerId == null) {
                                     ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('Could not open chat')),
+                                      const SnackBar(
+                                          content:
+                                          Text('Could not open chat')),
                                     );
                                     return;
                                   }
@@ -375,20 +405,25 @@ class _ProfilePageState extends State<ProfilePage> {
                                 children: [
                                   CircleAvatar(
                                     radius: 30,
-                                    backgroundImage: h.previewUrl.isNotEmpty
-                                        ? NetworkImage(
-                                      h.previewUrl,
-                                    )
+                                    backgroundImage:
+                                    h.previewUrl.isNotEmpty
+                                        ? NetworkImage(h.previewUrl)
                                         : null,
                                     child: h.previewUrl.isEmpty
                                         ? const Icon(Icons.photo)
                                         : null,
                                   ),
                                   const SizedBox(height: 6),
-                                  Text(
-                                    h.caption.isNotEmpty ? h.caption : 'Highlight ${index + 1}',
-                                    style: const TextStyle(fontSize: 12),
-                                    overflow: TextOverflow.ellipsis,
+                                  SizedBox(
+                                    width: 64,
+                                    child: Text(
+                                      h.caption.isNotEmpty
+                                          ? h.caption
+                                          : 'Highlight ${index + 1}',
+                                      style:
+                                      const TextStyle(fontSize: 12),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -412,7 +447,8 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                 )
                     : SliverGrid(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  gridDelegate:
+                  const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 3,
                     mainAxisSpacing: 2,
                     crossAxisSpacing: 2,
@@ -424,6 +460,10 @@ class _ProfilePageState extends State<ProfilePage> {
                           ? Image.network(
                         post.previewUrl,
                         fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) =>
+                        const ColoredBox(
+                            color: Colors.black12,
+                            child: Icon(Icons.photo)),
                       )
                           : const ColoredBox(
                         color: Colors.black12,

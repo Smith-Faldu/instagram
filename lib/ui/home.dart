@@ -1,13 +1,14 @@
 // lib/ui/home.dart
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/feed_service.dart';
 import '../services/post_service.dart';
-// import '../models/post_model.dart';
 import 'common_widget.dart';
 import 'package:instagram/ui/comments_sheet.dart';
+import '../utils/responsive.dart';
 
 class PostCardWidget extends StatefulWidget {
   final FeedPost feedPost;
@@ -29,13 +30,8 @@ class _PostCardWidgetState extends State<PostCardWidget> {
   void initState() {
     super.initState();
 
-    // Seed values from FeedPost model (Post has likesCount)
     final p = widget.feedPost.post;
     _likesCount = p.likesCount;
-
-    // We don't have likedBy in Post model, so start as not liked.
-    // If you later add a liked_by column to the returned payload, you can
-    // set initial liked state here by checking that array.
     _isLiked = false;
   }
 
@@ -60,6 +56,10 @@ class _PostCardWidgetState extends State<PostCardWidget> {
 
     if (_inFlight) return;
 
+    // Save previous state for safe rollback
+    final prevLiked = _isLiked;
+    final prevCount = _likesCount;
+
     // optimistic update
     setState(() {
       _inFlight = true;
@@ -67,36 +67,48 @@ class _PostCardWidgetState extends State<PostCardWidget> {
       _likesCount = _isLiked ? _likesCount + 1 : (_likesCount - 1 >= 0 ? _likesCount - 1 : 0);
     });
 
-    final action = await PostService.instance.toggleLikeRpc(postId: widget.feedPost.post.id);
+    try {
+      final action = await PostService.instance.toggleLikeRpc(postId: widget.feedPost.post.id);
 
-    if (action == null) {
-      // rollback on error
+      if (action == null) {
+        // rollback
+        if (!mounted) return;
+        setState(() {
+          _isLiked = prevLiked;
+          _likesCount = prevCount;
+          _inFlight = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not update like. Please try again.')),
+        );
+        return;
+      }
+
+      // Reconcile with server response (ensure consistent state)
       if (!mounted) return;
       setState(() {
-        _isLiked = !_isLiked;
-        _likesCount = _isLiked ? _likesCount + 1 : (_likesCount - 1 >= 0 ? _likesCount - 1 : 0);
+        if (action == 'liked') {
+          _isLiked = true;
+        } else if (action == 'unliked') {
+          _isLiked = false;
+        }
+        // don't try to infer exact count from RPC; keep optimistic count (server eventual consistency)
+        if (_likesCount < 0) _likesCount = 0;
         _inFlight = false;
       });
+    } catch (e) {
+      // rollback on unexpected error
+      if (!mounted) return;
+      setState(() {
+        _isLiked = prevLiked;
+        _likesCount = prevCount;
+        _inFlight = false;
+      });
+      if (kDebugMode) debugPrint('toggle like error: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Could not update like. Please try again.')),
       );
-      return;
     }
-
-    // Server says 'liked' or 'unliked'. Reconcile minimal state.
-    if (!mounted) return;
-    setState(() {
-      if (action == 'liked') {
-        _isLiked = true;
-      } else if (action == 'unliked') {
-        _isLiked = false;
-        // ensure no negative counts
-        if (_likesCount < 0) _likesCount = 0;
-      }
-      _inFlight = false;
-    });
-
-    // If you want authoritative counts, subscribe to realtime post stream or re-fetch the post.
   }
 
   @override
@@ -106,37 +118,42 @@ class _PostCardWidgetState extends State<PostCardWidget> {
     final u = feedPost.user;
     final preview = p.media.isNotEmpty ? p.media : '';
 
+    final R = Responsive(context);
+    final avatarRadius = R.avatarSize() / 2;
+    final horizontalPadding = R.isDesktop ? 24.0 : 12.0;
+    final imageAspect = R.isDesktop ? (16 / 9) : (4 / 5);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
           padding:
-          const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8),
+          EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 8),
           child: Row(
             children: [
               CircleAvatar(
-                radius: 28,
+                radius: avatarRadius,
                 backgroundImage:
                 u.profilePicUrl.isNotEmpty ? NetworkImage(u.profilePicUrl) : null,
                 child: u.profilePicUrl.isEmpty ? const Icon(Icons.person) : null,
               ),
-              const SizedBox(width: 10),
+              SizedBox(width: R.wp(3)),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       u.username.isNotEmpty ? u.username : u.fullName,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 16,
+                        fontSize: R.scaledText(16),
                       ),
                     ),
                     if (u.fullName.isNotEmpty && u.username.isNotEmpty)
                       Text(
                         u.fullName,
-                        style: const TextStyle(
-                          fontSize: 13,
+                        style: TextStyle(
+                          fontSize: R.scaledText(13),
                           color: Colors.grey,
                         ),
                       ),
@@ -144,32 +161,35 @@ class _PostCardWidgetState extends State<PostCardWidget> {
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.more_vert),
+                icon: Icon(Icons.more_vert, size: R.scaledText(20)),
                 onPressed: () {},
               ),
             ],
           ),
         ),
         AspectRatio(
-          aspectRatio: 4 / 5,
+          aspectRatio: imageAspect,
           child: preview.isNotEmpty
-              ? Image.network(preview, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black12))
+              ? Image.network(
+            preview,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black12),
+          )
               : const ColoredBox(color: Colors.black12),
         ),
         Padding(
-          padding:
-          const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6),
+          padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 6),
           child: Row(
             children: [
-              // Like button wired up
               IconButton(
                 icon: _inFlight
-                    ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
-                    : Icon(_isLiked ? Icons.favorite : Icons.favorite_border, color: _isLiked ? Colors.red : Colors.black),
+                    ? SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                    : Icon(_isLiked ? Icons.favorite : Icons.favorite_border,
+                    color: _isLiked ? Colors.red : Colors.black),
                 onPressed: _onLikeTap,
               ),
               IconButton(
-                icon: const Icon(Icons.mode_comment_outlined),
+                icon: Icon(Icons.mode_comment_outlined, size: R.scaledText(22)),
                 onPressed: () {
                   showModalBottomSheet(
                     context: context,
@@ -182,64 +202,64 @@ class _PostCardWidgetState extends State<PostCardWidget> {
                 },
               ),
               IconButton(
-                icon: const Icon(Icons.send_outlined),
+                icon: Icon(Icons.send_outlined, size: R.scaledText(22)),
                 onPressed: () {},
               ),
               const Spacer(),
               IconButton(
-                icon: const Icon(Icons.bookmark_border),
+                icon: Icon(Icons.bookmark_border, size: R.scaledText(22)),
                 onPressed: () {},
               ),
             ],
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12.0),
+          padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
           child: Text(
             "$_likesCount likes",
-            style: const TextStyle(fontWeight: FontWeight.bold),
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: R.scaledText(14)),
           ),
         ),
-        const SizedBox(height: 4),
+        SizedBox(height: R.hp(0.4)),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12.0),
+          padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
           child: RichText(
             text: TextSpan(
-              style: const TextStyle(color: Colors.black),
+              style: TextStyle(color: Colors.black, fontSize: R.scaledText(14)),
               children: [
                 TextSpan(
                   text: "${u.username.isNotEmpty ? u.username : u.fullName} ",
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                  style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 TextSpan(text: p.caption),
               ],
             ),
           ),
         ),
-        const SizedBox(height: 4),
+        SizedBox(height: R.hp(0.4)),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12.0),
+          padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
           child: Text(
             "View comments",
-            style: const TextStyle(color: Colors.grey, fontSize: 14),
+            style: TextStyle(color: Colors.grey, fontSize: R.scaledText(14)),
           ),
         ),
-        const SizedBox(height: 4),
+        SizedBox(height: R.hp(0.4)),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12.0),
+          padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
           child: Text(
             _timeAgo(feedPost.createdAt),
-            style: const TextStyle(color: Colors.grey, fontSize: 13),
+            style: TextStyle(color: Colors.grey, fontSize: R.scaledText(13)),
           ),
         ),
-        const SizedBox(height: 16),
+        SizedBox(height: R.hp(2)),
       ],
     );
   }
 }
 
-// StoryCircleWidget and HomePage remain unchanged from your original file.
-// (I left them as-is — only PostCardWidget swapped to stateful + like logic)
+// StoryCircleWidget and HomePage remain unchanged from your original file,
+// except they now use Responsive where PostCardWidget expects it to exist.
 
 class StoryCircleWidget extends StatelessWidget {
   final FeedUser user;
@@ -255,34 +275,34 @@ class StoryCircleWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final R = Responsive(context);
+    final radius = R.isDesktop ? 40.0 : 32.0;
+
     return GestureDetector(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        padding: EdgeInsets.symmetric(horizontal: R.wp(2.5), vertical: R.hp(0.8)),
         child: Column(
           children: [
             Container(
-              padding: const EdgeInsets.all(3),
+              padding: EdgeInsets.all(R.wp(0.8)),
               decoration: BoxDecoration(
-                gradient: hasUnseen
-                    ? const LinearGradient(colors: [Colors.orange, Colors.pink])
-                    : null,
+                gradient: hasUnseen ? const LinearGradient(colors: [Colors.orange, Colors.pink]) : null,
                 color: hasUnseen ? null : Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(38),
+                borderRadius: BorderRadius.circular(radius + 6),
               ),
               child: CircleAvatar(
-                radius: 32,
-                backgroundImage:
-                user.profilePicUrl.isNotEmpty ? NetworkImage(user.profilePicUrl) : null,
-                child: user.profilePicUrl.isEmpty ? const Icon(Icons.person) : null,
+                radius: radius,
+                backgroundImage: user.profilePicUrl.isNotEmpty ? NetworkImage(user.profilePicUrl) : null,
+                child: user.profilePicUrl.isEmpty ? Icon(Icons.person, size: R.scaledText(18)) : null,
               ),
             ),
-            const SizedBox(height: 6),
+            SizedBox(height: R.hp(0.6)),
             SizedBox(
               width: 70,
               child: Text(
                 user.username.isNotEmpty ? user.username : user.fullName,
-                style: const TextStyle(fontSize: 12),
+                style: TextStyle(fontSize: R.scaledText(12)),
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
               ),
@@ -294,7 +314,6 @@ class StoryCircleWidget extends StatelessWidget {
   }
 }
 
-// HomePage unchanged — it will render the updated PostCardWidget.
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -353,21 +372,23 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final R = Responsive(context);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
+        title: Text(
           "Instagram",
-          style: TextStyle(fontWeight: FontWeight.w700),
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: R.scaledText(18)),
         ),
         actions: <Widget>[
           IconButton(
-            icon: const Icon(Icons.notifications_none),
+            icon: Icon(Icons.notifications_none, size: R.scaledText(22)),
             onPressed: () {
               Navigator.pushNamed(context, '/notifications');
             },
           ),
           IconButton(
-            icon: const Icon(Icons.messenger_outline),
+            icon: Icon(Icons.messenger_outline, size: R.scaledText(22)),
             onPressed: () {
               Navigator.pushNamed(context, '/messages');
             },
@@ -383,7 +404,7 @@ class _HomePageState extends State<HomePage> {
                 future: _storiesFuture,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const SizedBox(height: 126, child: Center(child: CircularProgressIndicator()));
+                    return SizedBox(height: R.hp(16), child: const Center(child: CircularProgressIndicator()));
                   }
                   if (snapshot.hasError) {
                     return Padding(
@@ -395,7 +416,7 @@ class _HomePageState extends State<HomePage> {
                   if (groups.isEmpty) return const SizedBox.shrink();
 
                   return SizedBox(
-                    height: 126,
+                    height: R.hp(16),
                     child: ListView.builder(
                       scrollDirection: Axis.horizontal,
                       itemCount: groups.length,
@@ -414,16 +435,15 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
 
-            // Feed posts
             SliverList(
               delegate: SliverChildListDelegate.fixed([
                 FutureBuilder<List<FeedPost>>(
                   future: _feedFuture,
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Padding(
-                        padding: EdgeInsets.only(top: 32),
-                        child: Center(child: CircularProgressIndicator()),
+                      return Padding(
+                        padding: EdgeInsets.only(top: R.hp(4)),
+                        child: const Center(child: CircularProgressIndicator()),
                       );
                     }
                     if (snapshot.hasError) {
@@ -434,9 +454,9 @@ class _HomePageState extends State<HomePage> {
                     }
                     final posts = snapshot.data ?? [];
                     if (posts.isEmpty) {
-                      return const Padding(
+                      return Padding(
                         padding: EdgeInsets.all(24),
-                        child: Center(child: Text('No posts yet. Follow someone or post something.')),
+                        child: Center(child: Text('No posts yet. Follow someone or post something.', style: TextStyle(fontSize: R.scaledText(14)))),
                       );
                     }
 
@@ -445,7 +465,7 @@ class _HomePageState extends State<HomePage> {
                     );
                   },
                 ),
-                const SizedBox(height: 48),
+                SizedBox(height: R.hp(6)),
               ]),
             ),
           ],

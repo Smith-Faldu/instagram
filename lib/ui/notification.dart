@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'common_widget.dart';
@@ -86,11 +87,11 @@ class _Notif {
 
     return _Notif(
       id: (m['id'] is int) ? m['id'] : int.tryParse('${m['id'] ?? 0}') ?? 0,
-      userId: m['user_id'] ?? '',
-      actorId: m['actor_id'],
-      actorUsername: m['actor_username'],
-      actorPic: m['actor_pic'],
-      type: m['type'] ?? '',
+      userId: m['user_id']?.toString() ?? '',
+      actorId: m['actor_id']?.toString(),
+      actorUsername: m['actor_username']?.toString(),
+      actorPic: m['actor_pic']?.toString(),
+      type: m['type']?.toString() ?? '',
       payload: payload,
       isRead: m['is_read'] == true,
       createdAt: dt,
@@ -153,7 +154,11 @@ class _NotificationsListState extends State<NotificationsList> {
       if (res is List) {
         for (final e in res) {
           if (e is Map) {
-            notifs.add(_Notif.fromMap(Map<String, dynamic>.from(e)));
+            try {
+              notifs.add(_Notif.fromMap(Map<String, dynamic>.from(e)));
+            } catch (err, st) {
+              if (kDebugMode) debugPrint('notifications parse error: $err\n$st');
+            }
           }
         }
       }
@@ -162,7 +167,8 @@ class _NotificationsListState extends State<NotificationsList> {
         _items = notifs;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('fetch notifications error: $e\n$st');
       setState(() {
         _items = [];
         _loading = false;
@@ -170,7 +176,7 @@ class _NotificationsListState extends State<NotificationsList> {
     }
   }
 
-  // ⛔ FIXED REALTIME HANDLER
+  // Realtime handler that merges rows into current list
   void _subscribeRealtime() {
     if (_currentUserId == null) return;
 
@@ -184,9 +190,7 @@ class _NotificationsListState extends State<NotificationsList> {
         final rows = _extractRows(event);
         if (rows.isEmpty) return;
 
-        final parsed = rows
-            .map((e) => _Notif.fromMap(e))
-            .toList();
+        final parsed = rows.map((e) => _Notif.fromMap(e)).toList();
 
         final map = {for (var x in _items) x.id: x};
         for (final n in parsed) map[n.id] = n;
@@ -194,16 +198,20 @@ class _NotificationsListState extends State<NotificationsList> {
         final merged = map.values.toList()
           ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-        setState(() {
-          _items = merged;
-        });
-      } catch (e) {
-        debugPrint("Realtime parse error: $e");
+        if (mounted) {
+          setState(() {
+            _items = merged;
+          });
+        }
+      } catch (e, st) {
+        debugPrint("Realtime parse error: $e\n$st");
       }
+    }, onError: (err, st) {
+      debugPrint('Realtime subscription error: $err\n$st');
     });
   }
 
-  // ⛔ UNIVERSAL PAYLOAD EXTRACTOR
+  // Universal extractor for different event shapes
   List<Map<String, dynamic>> _extractRows(dynamic event) {
     final List<Map<String, dynamic>> out = [];
 
@@ -217,11 +225,14 @@ class _NotificationsListState extends State<NotificationsList> {
     }
 
     if (event is Map) {
-      out.add(Map<String, dynamic>.from(event));
+      // event may be the record itself
+      try {
+        out.add(Map<String, dynamic>.from(event));
+      } catch (_) {}
       return out;
     }
 
-    // Handle SupabaseStreamEvent
+    // SupabaseStreamEvent or similar: try common fields
     try {
       final dynamic rec = event.newRecord ?? event.record ?? event.payload;
       if (rec != null) {
@@ -255,9 +266,11 @@ class _NotificationsListState extends State<NotificationsList> {
           isRead: true,
           createdAt: n.createdAt,
         );
-        setState(() {});
+        if (mounted) setState(() {});
       }
-    } catch (_) {}
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('markRead error: $e\n$st');
+    }
   }
 
   @override
@@ -278,27 +291,36 @@ class _NotificationsListState extends State<NotificationsList> {
 
   Widget _buildRow(_Notif n) {
     // Show follow-back button only for follow notifications with a valid actorId
-    final Widget? trailingWidget = (n.type.toLowerCase() == 'follow' && n.actorId != null)
-        ? FollowBackButton(actorId: n.actorId!)
-        : null;
+    final bool isFollowType = n.type.toLowerCase() == 'follow' && (n.actorId?.isNotEmpty == true);
+
+    final Widget trailingWidget = isFollowType
+        ? FollowBackButton(
+      actorId: n.actorId!,
+      onCompleted: () {
+        // mark read when follow-back completed
+        _markRead(n.id);
+      },
+    )
+        : const SizedBox.shrink();
 
     return ListTile(
       leading: CircleAvatar(
-        backgroundImage:
-        n.actorPic != null ? NetworkImage(n.actorPic!) : null,
-        child: n.actorPic == null ? const Icon(Icons.person) : null,
+        backgroundImage: (n.actorPic != null && n.actorPic!.isNotEmpty) ? NetworkImage(n.actorPic!) : null,
+        child: (n.actorPic == null || n.actorPic!.isEmpty) ? const Icon(Icons.person) : null,
       ),
       title: Text(n.actorUsername ?? "Someone"),
       subtitle: Text(n.type),
       onTap: () => _markRead(n.id),
       trailing: trailingWidget,
+      tileColor: n.isRead ? null : Colors.blue.withOpacity(0.04),
     );
   }
 }
 
 class FollowBackButton extends StatefulWidget {
   final String actorId;
-  const FollowBackButton({super.key, required this.actorId});
+  final VoidCallback? onCompleted;
+  const FollowBackButton({super.key, required this.actorId, this.onCompleted});
 
   @override
   State<FollowBackButton> createState() => _FollowBackButtonState();
@@ -325,30 +347,44 @@ class _FollowBackButtonState extends State<FollowBackButton> {
         targetUserId: widget.actorId,
       ),
       builder: (context, snap) {
-        final following = snap.data;
+        final following = snap.data ?? false;
 
-        return ElevatedButton(
-          onPressed: _loading
-              ? null
-              : () async {
-            setState(() => _loading = true);
-            try {
-              if (following == true) {
-                await ProfileService.instance.unfollowUser(
-                  currentUserId: _me!,
-                  targetUserId: widget.actorId,
-                );
-              } else {
-                await ProfileService.instance.followUser(
-                  currentUserId: _me!,
-                  targetUserId: widget.actorId,
-                );
+        return SizedBox(
+          height: 36,
+          child: _loading
+              ? const SizedBox(width: 80, child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))))
+              : ElevatedButton(
+            onPressed: () async {
+              setState(() => _loading = true);
+              try {
+                if (following == true) {
+                  await ProfileService.instance.unfollowUser(
+                    currentUserId: _me!,
+                    targetUserId: widget.actorId,
+                  );
+                } else {
+                  await ProfileService.instance.followUser(
+                    currentUserId: _me!,
+                    targetUserId: widget.actorId,
+                  );
+                }
+                // optional callback so parent can mark notification read
+                widget.onCompleted?.call();
+              } catch (e, st) {
+                if (kDebugMode) debugPrint('follow/unfollow error: $e\n$st');
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Action failed')));
+              } finally {
+                if (mounted) setState(() => _loading = false);
               }
-            } finally {
-              if (mounted) setState(() => _loading = false);
-            }
-          },
-          child: Text(following == true ? "Following" : "Follow"),
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: following ? Colors.grey[200] : null,
+              foregroundColor: following ? Colors.black : null,
+              elevation: following ? 0 : null,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: Text(following ? "Following" : "Follow"),
+          ),
         );
       },
     );

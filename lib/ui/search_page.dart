@@ -34,28 +34,33 @@ class _SearchPageState extends State<SearchPage> {
     _error = '';
     _debounce?.cancel();
 
+    // debounce to avoid hammering the API
     _debounce = Timer(const Duration(milliseconds: 350), () {
       _search(value);
     });
   }
 
   Future<void> _search(String query) async {
-    if (!mounted) return;
-
-    if (query.trim().isEmpty) {
+    // ignore empty queries
+    final q = query.trim();
+    if (q.isEmpty) {
+      if (!mounted) return;
       setState(() {
         _results = [];
         _isLoading = false;
+        _error = '';
       });
       return;
     }
 
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
+      _error = '';
     });
 
     try {
-      final users = await ProfileService.instance.searchUsers(query);
+      final users = await ProfileService.instance.searchUsers(q);
       if (!mounted) return;
       setState(() {
         _results = users;
@@ -79,6 +84,16 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
+  void _clear() {
+    _controller.clear();
+    _debounce?.cancel();
+    setState(() {
+      _results = [];
+      _isLoading = false;
+      _error = '';
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -94,11 +109,19 @@ class _SearchPageState extends State<SearchPage> {
         title: TextField(
           controller: _controller,
           onChanged: _onQueryChanged,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             hintText: 'Search users',
             border: InputBorder.none,
+            suffixIcon: _controller.text.isEmpty
+                ? null
+                : IconButton(
+              icon: const Icon(Icons.clear),
+              onPressed: _clear,
+            ),
           ),
           textInputAction: TextInputAction.search,
+          onSubmitted: (v) => _search(v),
+          autofocus: true,
         ),
       ),
       body: Column(
@@ -113,29 +136,33 @@ class _SearchPageState extends State<SearchPage> {
               ),
             ),
           Expanded(
-            child: _results.isEmpty && !_isLoading && _controller.text.isNotEmpty
-                ? const Center(
-              child: Text('No users found'),
-            )
-                : ListView.builder(
-              itemCount: _results.length,
-              itemBuilder: (context, index) {
-                final user = _results[index];
-                return ListTile(
-                  leading: CircleAvatar(
-                    backgroundImage: user.profilePicUrl.isNotEmpty
-                        ? NetworkImage(user.profilePicUrl)
-                        : null,
-                    child: user.profilePicUrl.isEmpty
-                        ? const Icon(Icons.person)
-                        : null,
-                  ),
-                  title: Text(user.username),
-                  subtitle: user.fullName.isNotEmpty ? Text(user.fullName) : null,
-                  onTap: () => _openProfile(user),
-                );
-              },
-            ),
+            child: Builder(builder: (_) {
+              if (_isLoading) {
+                return const Center(child: Text('Searching...'));
+              }
+              if (_controller.text.trim().isEmpty) {
+                return const Center(child: Text('Search for users by username or name'));
+              }
+              if (_results.isEmpty) {
+                return const Center(child: Text('No users found'));
+              }
+              return ListView.builder(
+                itemCount: _results.length,
+                itemBuilder: (context, index) {
+                  final user = _results[index];
+                  final avatar = user.profilePicUrl.isNotEmpty ? NetworkImage(user.profilePicUrl) : null;
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundImage: avatar,
+                      child: avatar == null ? const Icon(Icons.person) : null,
+                    ),
+                    title: Text(user.username),
+                    subtitle: user.fullName.isNotEmpty ? Text(user.fullName) : null,
+                    onTap: () => _openProfile(user),
+                  );
+                },
+              );
+            }),
           ),
         ],
       ),
