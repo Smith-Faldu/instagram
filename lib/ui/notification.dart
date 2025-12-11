@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'common_widget.dart';
+import '../services/profile_services.dart';
 
 class NotificationsPage extends StatelessWidget {
   const NotificationsPage({super.key});
@@ -38,7 +39,6 @@ class NotificationsPage extends StatelessWidget {
   }
 }
 
-/// Local simple model for UI
 class _Notif {
   final int id;
   final String userId;
@@ -81,20 +81,18 @@ class _Notif {
       try {
         final decoded = jsonDecode(p);
         if (decoded is Map) payload = Map<String, dynamic>.from(decoded);
-      } catch (_) {
-        payload = null;
-      }
+      } catch (_) {}
     }
 
     return _Notif(
-      id: (m['id'] is int) ? m['id'] as int : int.tryParse('${m['id'] ?? 0}') ?? 0,
-      userId: (m['user_id'] ?? '') as String,
-      actorId: (m['actor_id'] ?? '') as String?,
-      actorUsername: (m['actor_username'] ?? '') as String?,
-      actorPic: (m['actor_pic'] ?? '') as String?,
-      type: (m['type'] ?? '') as String,
+      id: (m['id'] is int) ? m['id'] : int.tryParse('${m['id'] ?? 0}') ?? 0,
+      userId: m['user_id'] ?? '',
+      actorId: m['actor_id'],
+      actorUsername: m['actor_username'],
+      actorPic: m['actor_pic'],
+      type: m['type'] ?? '',
       payload: payload,
-      isRead: (m['is_read'] == true),
+      isRead: m['is_read'] == true,
       createdAt: dt,
     );
   }
@@ -112,7 +110,7 @@ class _NotificationsListState extends State<NotificationsList> {
   String? _currentUserId;
   List<_Notif> _items = [];
   bool _loading = true;
-  StreamSubscription<dynamic>? _realtimeSub;
+  StreamSubscription? _realtimeSub;
 
   @override
   void initState() {
@@ -131,7 +129,6 @@ class _NotificationsListState extends State<NotificationsList> {
     if (_currentUserId == null) {
       setState(() {
         _loading = false;
-        _items = [];
       });
       return;
     }
@@ -142,238 +139,125 @@ class _NotificationsListState extends State<NotificationsList> {
 
   Future<void> _fetchInitial() async {
     try {
-      // _currentUserId is non-null here
       final cur = _currentUserId!;
       final res = await _client
           .from('notifications')
-          .select('id, user_id, actor_id, actor_username, actor_pic, type, payload, is_read, created_at')
+          .select()
           .eq('user_id', cur)
           .order('created_at', ascending: false)
           .limit(50);
 
       if (!mounted) return;
 
-      final list = <_Notif>[];
+      final List<_Notif> notifs = [];
       if (res is List) {
         for (final e in res) {
-          if (e is Map) list.add(_Notif.fromMap(Map<String, dynamic>.from(e)));
+          if (e is Map) {
+            notifs.add(_Notif.fromMap(Map<String, dynamic>.from(e)));
+          }
         }
       }
 
       setState(() {
-        _items = list;
+        _items = notifs;
         _loading = false;
       });
-    } catch (e, st) {
-      if (mounted) {
-        setState(() {
-          _items = [];
-          _loading = false;
-        });
-      }
-      debugPrint('[Notifications] fetchInitial error: $e\n$st');
+    } catch (e) {
+      setState(() {
+        _items = [];
+        _loading = false;
+      });
     }
   }
 
+  // ⛔ FIXED REALTIME HANDLER
   void _subscribeRealtime() {
     if (_currentUserId == null) return;
-    final cur = _currentUserId!;
 
     final stream = _client
         .from('notifications')
         .stream(primaryKey: ['id'])
-        .eq('user_id', cur);
+        .eq('user_id', _currentUserId!);
 
-    _realtimeSub = stream.listen((payload) {
+    _realtimeSub = stream.listen((event) {
       try {
-        if (payload == null) return;
-        final rows = (payload is List) ? payload.cast<Map<String, dynamic>>() : <Map<String, dynamic>>[];
-        final parsed = rows.map((r) => _Notif.fromMap(Map<String, dynamic>.from(r))).toList();
-        parsed.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        final rows = _extractRows(event);
+        if (rows.isEmpty) return;
 
-        if (!mounted) return;
+        final parsed = rows
+            .map((e) => _Notif.fromMap(e))
+            .toList();
+
+        final map = {for (var x in _items) x.id: x};
+        for (final n in parsed) map[n.id] = n;
+
+        final merged = map.values.toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
         setState(() {
-          _items = parsed;
+          _items = merged;
         });
-      } catch (e, st) {
-        debugPrint('[Notifications] realtime parsing error: $e\n$st');
+      } catch (e) {
+        debugPrint("Realtime parse error: $e");
       }
-    }, onError: (err) {
-      debugPrint('[Notifications] realtime stream error: $err');
     });
+  }
+
+  // ⛔ UNIVERSAL PAYLOAD EXTRACTOR
+  List<Map<String, dynamic>> _extractRows(dynamic event) {
+    final List<Map<String, dynamic>> out = [];
+
+    if (event == null) return out;
+
+    if (event is List) {
+      for (final e in event) {
+        if (e is Map) out.add(Map<String, dynamic>.from(e));
+      }
+      return out;
+    }
+
+    if (event is Map) {
+      out.add(Map<String, dynamic>.from(event));
+      return out;
+    }
+
+    // Handle SupabaseStreamEvent
+    try {
+      final dynamic rec = event.newRecord ?? event.record ?? event.payload;
+      if (rec != null) {
+        if (rec is Map) out.add(Map<String, dynamic>.from(rec));
+        if (rec is List) {
+          for (final e in rec) {
+            if (e is Map) out.add(Map<String, dynamic>.from(e));
+          }
+        }
+      }
+    } catch (_) {}
+
+    return out;
   }
 
   Future<void> _markRead(int id) async {
     try {
-      await _client
-          .from('notifications')
-          .update({'is_read': true})
-          .eq('id', id);
-      final idx = _items.indexWhere((it) => it.id == id);
+      await _client.from('notifications').update({'is_read': true}).eq('id', id);
+
+      final idx = _items.indexWhere((e) => e.id == id);
       if (idx != -1) {
-        final old = _items[idx];
-        setState(() {
-          _items[idx] = _Notif(
-            id: old.id,
-            userId: old.userId,
-            actorId: old.actorId,
-            actorUsername: old.actorUsername,
-            actorPic: old.actorPic,
-            type: old.type,
-            payload: old.payload,
-            isRead: true,
-            createdAt: old.createdAt,
-          );
-        });
+        final n = _items[idx];
+        _items[idx] = _Notif(
+          id: n.id,
+          userId: n.userId,
+          actorId: n.actorId,
+          actorUsername: n.actorUsername,
+          actorPic: n.actorPic,
+          type: n.type,
+          payload: n.payload,
+          isRead: true,
+          createdAt: n.createdAt,
+        );
+        setState(() {});
       }
-    } catch (e) {
-      debugPrint('[Notifications] markRead error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not mark read')));
-      }
-    }
-  }
-
-  String _actionText(_Notif n) {
-    switch (n.type) {
-      case 'like':
-        return 'liked your post.';
-      case 'comment':
-        return n.payload != null && n.payload!['text'] != null
-            ? 'commented: "${n.payload!['text']}"'
-            : 'commented on your post.';
-      case 'follow':
-        return 'started following you.';
-      case 'mention':
-        return 'mentioned you.';
-      default:
-        return 'did something.';
-    }
-  }
-
-  IconData _iconFor(_Notif n) {
-    switch (n.type) {
-      case 'like':
-        return Icons.favorite;
-      case 'comment':
-        return Icons.comment;
-      case 'follow':
-        return Icons.person_add;
-      case 'mention':
-        return Icons.alternate_email;
-      default:
-        return Icons.notifications;
-    }
-  }
-
-  Color _iconColorFor(_Notif n) {
-    switch (n.type) {
-      case 'like':
-        return Colors.red;
-      case 'comment':
-        return Colors.blue;
-      case 'follow':
-        return Colors.green;
-      case 'mention':
-        return Colors.purple;
-      default:
-        return Colors.grey;
-    }
-  }
-
-  Widget _buildRow(_Notif n) {
-    final avatar = (n.actorPic != null && n.actorPic!.isNotEmpty) ? NetworkImage(n.actorPic!) : null;
-    final subtitle = _actionText(n);
-    final timeAgo = _timeAgo(n.createdAt);
-
-    return InkWell(
-      onTap: () async {
-        if (!n.isRead) await _markRead(n.id);
-
-        final pid = n.payload != null && n.payload!['post_id'] != null ? n.payload!['post_id'].toString() : null;
-        if (pid != null && pid.isNotEmpty) {
-          // navigate if you have route for post
-          // Navigator.pushNamed(context, '/post', arguments: {'postId': int.parse(pid)});
-        }
-      },
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16),
-        child: Row(
-          children: [
-            Stack(
-              children: [
-                CircleAvatar(
-                  radius: 24,
-                  backgroundImage: avatar,
-                  child: avatar == null ? const Icon(Icons.person) : null,
-                ),
-                if (n.type != 'follow')
-                  Positioned(
-                    bottom: 0,
-                    right: 0,
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: _iconColorFor(n),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2),
-                      ),
-                      child: Icon(
-                        _iconFor(n),
-                        color: Colors.white,
-                        size: 12,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: RichText(
-                text: TextSpan(
-                  style: TextStyle(color: Colors.black, fontSize: 14, fontWeight: n.isRead ? FontWeight.normal : FontWeight.w600),
-                  children: [
-                    TextSpan(
-                      text: n.actorUsername ?? (n.actorId != null ? n.actorId!.substring(0,6) : 'Someone'),
-                      style: TextStyle(fontWeight: n.isRead ? FontWeight.w600 : FontWeight.w700),
-                    ),
-                    TextSpan(
-                      text: ' $subtitle ',
-                      style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.normal),
-                    ),
-                    TextSpan(
-                      text: timeAgo,
-                      style: TextStyle(color: Colors.grey[600], fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            if (n.payload != null && n.payload!['post_thumb'] != null)
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(4),
-                  image: DecorationImage(
-                    image: NetworkImage(n.payload!['post_thumb']),
-                    fit: BoxFit.cover,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _timeAgo(DateTime dt) {
-    final diff = DateTime.now().difference(dt);
-    if (diff.inSeconds < 60) return '${diff.inSeconds}s';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m';
-    if (diff.inHours < 24) return '${diff.inHours}h';
-    if (diff.inDays < 7) return '${diff.inDays}d';
-    return '${dt.day}/${dt.month}/${dt.year}';
+    } catch (_) {}
   }
 
   @override
@@ -383,31 +267,83 @@ class _NotificationsListState extends State<NotificationsList> {
     }
 
     if (_items.isEmpty) {
-      return ListView(
-        children: const [
-          SizedBox(height: 24),
-          Center(child: Text('No notifications yet')),
-        ],
-      );
+      return const Center(child: Text("No notifications yet"));
     }
 
     return ListView.builder(
-      itemCount: _items.length + 1,
-      itemBuilder: (context, index) {
-        if (index == 0) {
-          return const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Text(
-              "Recent",
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          );
-        }
-        final n = _items[index - 1];
-        return _buildRow(n);
+      itemCount: _items.length,
+      itemBuilder: (context, i) => _buildRow(_items[i]),
+    );
+  }
+
+  Widget _buildRow(_Notif n) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundImage:
+        n.actorPic != null ? NetworkImage(n.actorPic!) : null,
+        child: n.actorPic == null ? const Icon(Icons.person) : null,
+      ),
+      title: Text(n.actorUsername ?? "Someone"),
+      subtitle: Text(n.type),
+      onTap: () => _markRead(n.id),
+    );
+  }
+}
+
+class FollowBackButton extends StatefulWidget {
+  final String actorId;
+  const FollowBackButton({super.key, required this.actorId});
+
+  @override
+  State<FollowBackButton> createState() => _FollowBackButtonState();
+}
+
+class _FollowBackButtonState extends State<FollowBackButton> {
+  final SupabaseClient _client = Supabase.instance.client;
+  String? _me;
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _me = _client.auth.currentUser?.id;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_me == null || widget.actorId == _me) return const SizedBox();
+
+    return StreamBuilder<bool?>(
+      stream: ProfileService.instance.isFollowingStream(
+        currentUserId: _me!,
+        targetUserId: widget.actorId,
+      ),
+      builder: (context, snap) {
+        final following = snap.data;
+
+        return ElevatedButton(
+          onPressed: _loading
+              ? null
+              : () async {
+            setState(() => _loading = true);
+            try {
+              if (following == true) {
+                await ProfileService.instance.unfollowUser(
+                  currentUserId: _me!,
+                  targetUserId: widget.actorId,
+                );
+              } else {
+                await ProfileService.instance.followUser(
+                  currentUserId: _me!,
+                  targetUserId: widget.actorId,
+                );
+              }
+            } finally {
+              if (mounted) setState(() => _loading = false);
+            }
+          },
+          child: Text(following == true ? "Following" : "Follow"),
+        );
       },
     );
   }
