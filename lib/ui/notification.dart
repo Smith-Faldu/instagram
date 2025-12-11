@@ -277,6 +277,11 @@ class _NotificationsListState extends State<NotificationsList> {
   }
 
   Widget _buildRow(_Notif n) {
+    // Show follow-back button only for follow notifications with a valid actorId
+    final Widget? trailingWidget = (n.type.toLowerCase() == 'follow' && n.actorId != null)
+        ? FollowBackButton(actorId: n.actorId!)
+        : null;
+
     return ListTile(
       leading: CircleAvatar(
         backgroundImage:
@@ -286,6 +291,7 @@ class _NotificationsListState extends State<NotificationsList> {
       title: Text(n.actorUsername ?? "Someone"),
       subtitle: Text(n.type),
       onTap: () => _markRead(n.id),
+      trailing: trailingWidget,
     );
   }
 }
