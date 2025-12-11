@@ -1,5 +1,9 @@
 // lib/NotificationsPage.dart
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'common_widget.dart';
 
 class NotificationsPage extends StatelessWidget {
@@ -17,7 +21,7 @@ class NotificationsPage extends StatelessWidget {
           onPressed: () => Navigator.pushNamedAndRemoveUntil(
             context,
             '/home',
-            (route) => false,
+                (route) => false,
           ),
         ),
         title: const Text(
@@ -28,288 +32,383 @@ class NotificationsPage extends StatelessWidget {
           ),
         ),
       ),
-      body: const Notifications(),
+      body: const NotificationsList(),
       bottomNavigationBar: const BottomNavBar(currentIndex: 3),
     );
   }
 }
 
-enum NotificationType {
-  like,
-  comment,
-  mention,
-  follow,
-}
+/// Local simple model for UI
+class _Notif {
+  final int id;
+  final String userId;
+  final String? actorId;
+  final String? actorUsername;
+  final String? actorPic;
+  final String type;
+  final Map<String, dynamic>? payload;
+  final bool isRead;
+  final DateTime createdAt;
 
-class NotificationItem extends StatelessWidget {
-  final String username;
-  final String action;
-  final String time;
-  final String avatarUrl;
-  final String? postImageUrl;
-  final bool hasFollowButton;
-  final NotificationType type;
-
-  const NotificationItem({
-    super.key,
-    required this.username,
-    required this.action,
-    required this.time,
-    this.avatarUrl = "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300",
-    this.postImageUrl,
-    this.hasFollowButton = false,
-    this.type = NotificationType.like,
+  _Notif({
+    required this.id,
+    required this.userId,
+    this.actorId,
+    this.actorUsername,
+    this.actorPic,
+    required this.type,
+    this.payload,
+    required this.isRead,
+    required this.createdAt,
   });
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16),
-      child: Row(
-        children: [
-          Stack(
-            children: [
-              CircleAvatar(
-                radius: 24,
-                backgroundImage: NetworkImage(avatarUrl),
-              ),
-              if (type != NotificationType.follow)
-                Positioned(
-                  bottom: 0,
-                  right: 0,
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                      color: _getIconColor(),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
-                    ),
-                    child: Icon(
-                      _getIcon(),
-                      color: Colors.white,
-                      size: 12,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: RichText(
-              text: TextSpan(
-                style: const TextStyle(color: Colors.black, fontSize: 14),
-                children: [
-                  TextSpan(
-                    text: username,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  TextSpan(
-                    text: " $action ",
-                    style: const TextStyle(color: Colors.black87),
-                  ),
-                  TextSpan(
-                    text: time,
-                    style: TextStyle(color: Colors.grey[600]),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (hasFollowButton)
-            const _FollowButton()
-          else if (postImageUrl != null)
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(4),
-                image: DecorationImage(
-                  image: NetworkImage(postImageUrl!),
-                  fit: BoxFit.cover,
-                ),
-              ),
-            ),
-        ],
-      ),
+  factory _Notif.fromMap(Map<String, dynamic> m) {
+    DateTime dt;
+    final raw = m['created_at'];
+    if (raw is String) {
+      dt = DateTime.tryParse(raw) ?? DateTime.now();
+    } else if (raw is DateTime) {
+      dt = raw;
+    } else {
+      dt = DateTime.now();
+    }
+
+    Map<String, dynamic>? payload;
+    final p = m['payload'];
+    if (p is Map) {
+      payload = Map<String, dynamic>.from(p);
+    } else if (p is String) {
+      try {
+        final decoded = jsonDecode(p);
+        if (decoded is Map) payload = Map<String, dynamic>.from(decoded);
+      } catch (_) {
+        payload = null;
+      }
+    }
+
+    return _Notif(
+      id: (m['id'] is int) ? m['id'] as int : int.tryParse('${m['id'] ?? 0}') ?? 0,
+      userId: (m['user_id'] ?? '') as String,
+      actorId: (m['actor_id'] ?? '') as String?,
+      actorUsername: (m['actor_username'] ?? '') as String?,
+      actorPic: (m['actor_pic'] ?? '') as String?,
+      type: (m['type'] ?? '') as String,
+      payload: payload,
+      isRead: (m['is_read'] == true),
+      createdAt: dt,
     );
   }
+}
 
-  IconData _getIcon() {
-    switch (type) {
-      case NotificationType.like:
+class NotificationsList extends StatefulWidget {
+  const NotificationsList({super.key});
+
+  @override
+  State<NotificationsList> createState() => _NotificationsListState();
+}
+
+class _NotificationsListState extends State<NotificationsList> {
+  final SupabaseClient _client = Supabase.instance.client;
+  String? _currentUserId;
+  List<_Notif> _items = [];
+  bool _loading = true;
+  StreamSubscription<dynamic>? _realtimeSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentUserId = _client.auth.currentUser?.id;
+    _init();
+  }
+
+  @override
+  void dispose() {
+    _realtimeSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _init() async {
+    if (_currentUserId == null) {
+      setState(() {
+        _loading = false;
+        _items = [];
+      });
+      return;
+    }
+
+    await _fetchInitial();
+    _subscribeRealtime();
+  }
+
+  Future<void> _fetchInitial() async {
+    try {
+      // _currentUserId is non-null here
+      final cur = _currentUserId!;
+      final res = await _client
+          .from('notifications')
+          .select('id, user_id, actor_id, actor_username, actor_pic, type, payload, is_read, created_at')
+          .eq('user_id', cur)
+          .order('created_at', ascending: false)
+          .limit(50);
+
+      if (!mounted) return;
+
+      final list = <_Notif>[];
+      if (res is List) {
+        for (final e in res) {
+          if (e is Map) list.add(_Notif.fromMap(Map<String, dynamic>.from(e)));
+        }
+      }
+
+      setState(() {
+        _items = list;
+        _loading = false;
+      });
+    } catch (e, st) {
+      if (mounted) {
+        setState(() {
+          _items = [];
+          _loading = false;
+        });
+      }
+      debugPrint('[Notifications] fetchInitial error: $e\n$st');
+    }
+  }
+
+  void _subscribeRealtime() {
+    if (_currentUserId == null) return;
+    final cur = _currentUserId!;
+
+    final stream = _client
+        .from('notifications')
+        .stream(primaryKey: ['id'])
+        .eq('user_id', cur);
+
+    _realtimeSub = stream.listen((payload) {
+      try {
+        if (payload == null) return;
+        final rows = (payload is List) ? payload.cast<Map<String, dynamic>>() : <Map<String, dynamic>>[];
+        final parsed = rows.map((r) => _Notif.fromMap(Map<String, dynamic>.from(r))).toList();
+        parsed.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+        if (!mounted) return;
+        setState(() {
+          _items = parsed;
+        });
+      } catch (e, st) {
+        debugPrint('[Notifications] realtime parsing error: $e\n$st');
+      }
+    }, onError: (err) {
+      debugPrint('[Notifications] realtime stream error: $err');
+    });
+  }
+
+  Future<void> _markRead(int id) async {
+    try {
+      await _client
+          .from('notifications')
+          .update({'is_read': true})
+          .eq('id', id);
+      final idx = _items.indexWhere((it) => it.id == id);
+      if (idx != -1) {
+        final old = _items[idx];
+        setState(() {
+          _items[idx] = _Notif(
+            id: old.id,
+            userId: old.userId,
+            actorId: old.actorId,
+            actorUsername: old.actorUsername,
+            actorPic: old.actorPic,
+            type: old.type,
+            payload: old.payload,
+            isRead: true,
+            createdAt: old.createdAt,
+          );
+        });
+      }
+    } catch (e) {
+      debugPrint('[Notifications] markRead error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not mark read')));
+      }
+    }
+  }
+
+  String _actionText(_Notif n) {
+    switch (n.type) {
+      case 'like':
+        return 'liked your post.';
+      case 'comment':
+        return n.payload != null && n.payload!['text'] != null
+            ? 'commented: "${n.payload!['text']}"'
+            : 'commented on your post.';
+      case 'follow':
+        return 'started following you.';
+      case 'mention':
+        return 'mentioned you.';
+      default:
+        return 'did something.';
+    }
+  }
+
+  IconData _iconFor(_Notif n) {
+    switch (n.type) {
+      case 'like':
         return Icons.favorite;
-      case NotificationType.comment:
+      case 'comment':
         return Icons.comment;
-      case NotificationType.mention:
-        return Icons.alternate_email;
-      case NotificationType.follow:
+      case 'follow':
         return Icons.person_add;
+      case 'mention':
+        return Icons.alternate_email;
+      default:
+        return Icons.notifications;
     }
   }
 
-  Color _getIconColor() {
-    switch (type) {
-      case NotificationType.like:
+  Color _iconColorFor(_Notif n) {
+    switch (n.type) {
+      case 'like':
         return Colors.red;
-      case NotificationType.comment:
+      case 'comment':
         return Colors.blue;
-      case NotificationType.mention:
-        return Colors.purple;
-      case NotificationType.follow:
+      case 'follow':
         return Colors.green;
+      case 'mention':
+        return Colors.purple;
+      default:
+        return Colors.grey;
     }
   }
-}
 
-class _FollowButton extends StatefulWidget {
-  const _FollowButton();
+  Widget _buildRow(_Notif n) {
+    final avatar = (n.actorPic != null && n.actorPic!.isNotEmpty) ? NetworkImage(n.actorPic!) : null;
+    final subtitle = _actionText(n);
+    final timeAgo = _timeAgo(n.createdAt);
 
-  @override
-  State<_FollowButton> createState() => _FollowButtonState();
-}
+    return InkWell(
+      onTap: () async {
+        if (!n.isRead) await _markRead(n.id);
 
-class _FollowButtonState extends State<_FollowButton> {
-  bool isFollowing = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 32,
-      child: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: isFollowing ? Colors.grey[200] : Colors.blue,
-          foregroundColor: isFollowing ? Colors.black : Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
-          elevation: 0,
-        ),
-        onPressed: () {
-          setState(() {
-            isFollowing = !isFollowing;
-          });
-        },
-        child: Text(
-          isFollowing ? "Following" : "Follow",
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
+        final pid = n.payload != null && n.payload!['post_id'] != null ? n.payload!['post_id'].toString() : null;
+        if (pid != null && pid.isNotEmpty) {
+          // navigate if you have route for post
+          // Navigator.pushNamed(context, '/post', arguments: {'postId': int.parse(pid)});
+        }
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16),
+        child: Row(
+          children: [
+            Stack(
+              children: [
+                CircleAvatar(
+                  radius: 24,
+                  backgroundImage: avatar,
+                  child: avatar == null ? const Icon(Icons.person) : null,
+                ),
+                if (n.type != 'follow')
+                  Positioned(
+                    bottom: 0,
+                    right: 0,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: _iconColorFor(n),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                      ),
+                      child: Icon(
+                        _iconFor(n),
+                        color: Colors.white,
+                        size: 12,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: RichText(
+                text: TextSpan(
+                  style: TextStyle(color: Colors.black, fontSize: 14, fontWeight: n.isRead ? FontWeight.normal : FontWeight.w600),
+                  children: [
+                    TextSpan(
+                      text: n.actorUsername ?? (n.actorId != null ? n.actorId!.substring(0,6) : 'Someone'),
+                      style: TextStyle(fontWeight: n.isRead ? FontWeight.w600 : FontWeight.w700),
+                    ),
+                    TextSpan(
+                      text: ' $subtitle ',
+                      style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.normal),
+                    ),
+                    TextSpan(
+                      text: timeAgo,
+                      style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (n.payload != null && n.payload!['post_thumb'] != null)
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(4),
+                  image: DecorationImage(
+                    image: NetworkImage(n.payload!['post_thumb']),
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
-}
 
-class Notifications extends StatelessWidget {
-  const Notifications({super.key});
+  String _timeAgo(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inSeconds < 60) return '${diff.inSeconds}s';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m';
+    if (diff.inHours < 24) return '${diff.inHours}h';
+    if (diff.inDays < 7) return '${diff.inDays}d';
+    return '${dt.day}/${dt.month}/${dt.year}';
+  }
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      children: const [
-        Padding(
-          padding: EdgeInsets.all(16.0),
-          child: Text(
-            "Today",
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_items.isEmpty) {
+      return ListView(
+        children: const [
+          SizedBox(height: 24),
+          Center(child: Text('No notifications yet')),
+        ],
+      );
+    }
+
+    return ListView.builder(
+      itemCount: _items.length + 1,
+      itemBuilder: (context, index) {
+        if (index == 0) {
+          return const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text(
+              "Recent",
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-          ),
-        ),
-        NotificationItem(
-          username: "alex_photo",
-          action: "liked your photo.",
-          time: "2m",
-          avatarUrl: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300",
-          postImageUrl: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=400",
-          type: NotificationType.like,
-        ),
-        NotificationItem(
-          username: "jane_doe",
-          action: "started following you.",
-          time: "15m",
-          avatarUrl: "https://images.unsplash.com/photo-1478720568477-152d9b164e26?w=300",
-          hasFollowButton: true,
-          type: NotificationType.follow,
-        ),
-        NotificationItem(
-          username: "travel_explorer",
-          action: "commented: \"Amazing shot! 🔥\"",
-          time: "1h",
-          avatarUrl: "https://images.unsplash.com/photo-1504198453319-5ce911bafcde?w=300",
-          postImageUrl: "https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=400",
-          type: NotificationType.comment,
-        ),
-        NotificationItem(
-          username: "foodie_gram",
-          action: "liked your photo.",
-          time: "2h",
-          avatarUrl: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=300",
-          postImageUrl: "https://images.unsplash.com/photo-1521737604893-d14cc237f11d?w=400",
-          type: NotificationType.like,
-        ),
-        NotificationItem(
-          username: "style_lover",
-          action: "liked your photo.",
-          time: "3h",
-          avatarUrl: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300",
-          postImageUrl: "https://images.unsplash.com/photo-1500336624523-d727130c3328?w=400",
-          type: NotificationType.like,
-        ),
-        Padding(
-          padding: EdgeInsets.all(16.0),
-          child: Text(
-            "This Week",
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-        NotificationItem(
-          username: "photo_master",
-          action: "mentioned you in a comment: \"@alex_photo check this out!\"",
-          time: "2d",
-          avatarUrl: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300",
-          postImageUrl: "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?w=400",
-          type: NotificationType.mention,
-        ),
-        NotificationItem(
-          username: "wanderlust_99",
-          action: "started following you.",
-          time: "3d",
-          avatarUrl: "https://images.unsplash.com/photo-1504198453319-5ce911bafcde?w=300",
-          hasFollowButton: true,
-          type: NotificationType.follow,
-        ),
-        NotificationItem(
-          username: "coffee_addict",
-          action: "commented: \"Where is this place?\"",
-          time: "4d",
-          avatarUrl: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=300",
-          postImageUrl: "https://images.unsplash.com/photo-1521316730702-829a8e30dfd0?w=400",
-          type: NotificationType.comment,
-        ),
-        NotificationItem(
-          username: "sunset_chaser",
-          action: "liked your photo.",
-          time: "5d",
-          avatarUrl: "https://images.unsplash.com/photo-1478720568477-152d9b164e26?w=300",
-          postImageUrl: "https://images.unsplash.com/photo-1504198453319-5ce911bafcde?w=400",
-          type: NotificationType.like,
-        ),
-        NotificationItem(
-          username: "adventure_soul",
-          action: "started following you.",
-          time: "6d",
-          avatarUrl: "https://images.unsplash.com/photo-1504198453319-5ce911bafcde?w=300",
-          hasFollowButton: true,
-          type: NotificationType.follow,
-        ),
-      ],
+          );
+        }
+        final n = _items[index - 1];
+        return _buildRow(n);
+      },
     );
   }
 }

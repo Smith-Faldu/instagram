@@ -7,6 +7,7 @@ import '../services/feed_service.dart';
 import '../services/post_service.dart';
 // import '../models/post_model.dart';
 import 'common_widget.dart';
+import 'package:instagram/ui/comments_sheet.dart';
 
 class PostCardWidget extends StatefulWidget {
   final FeedPost feedPost;
@@ -169,7 +170,16 @@ class _PostCardWidgetState extends State<PostCardWidget> {
               ),
               IconButton(
                 icon: const Icon(Icons.mode_comment_outlined),
-                onPressed: () {},
+                onPressed: () {
+                  showModalBottomSheet(
+                    context: context,
+                    isScrollControlled: true,
+                    builder: (ctx) => Padding(
+                      padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+                      child: CommentsSheet(postId: widget.feedPost.post.id),
+                    ),
+                  );
+                },
               ),
               IconButton(
                 icon: const Icon(Icons.send_outlined),

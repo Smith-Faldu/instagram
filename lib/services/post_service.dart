@@ -6,6 +6,22 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/post_model.dart';
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class PostService {
   PostService._();
   static final instance = PostService._();
@@ -155,4 +171,55 @@ class PostService {
       return null;
     }
   }
+// -------------------------
+// Comments (minimal helpers)
+// -------------------------
+
+  /// Returns list of comments for the post ordered by created_at ascending.
+  Future<List<Map<String, dynamic>>> getComments({ required int postId }) async {
+    try {
+      final res = await _client
+          .from('comments')
+      // return basic comment fields + commenter info using foreign select
+          .select('id, comment, created_at, commenter_id, commenter:commenter_id(username, profile_pic)')
+          .eq('post_id', postId)
+          .order('created_at', ascending: true);
+
+      if (res == null) return [];
+      // res is List<dynamic> of maps
+      return (res as List<dynamic>).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (e) {
+      if (kDebugMode) print('[PostService.getComments] error: $e');
+      return [];
+    }
+  }
+
+  /// Inserts a comment row and returns the inserted row map (or null on failure).
+  Future<Map<String, dynamic>?> addComment({ required int postId, required String text }) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    if (text.trim().isEmpty) return null;
+
+    try {
+      final payload = {
+        'post_id': postId,
+        'comment': text.trim(),
+        'commenter_id': user.id,
+      };
+
+      final res = await _client
+          .from('comments')
+          .insert(payload)
+          .select('id, comment, created_at, commenter_id, commenter:commenter_id(username, profile_pic)')
+          .maybeSingle();
+
+      if (res == null) return null;
+      return Map<String, dynamic>.from(res as Map);
+    } catch (e) {
+      if (kDebugMode) print('[PostService.addComment] error: $e');
+      rethrow;
+    }
+  }
+
 }
