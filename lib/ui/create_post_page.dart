@@ -17,7 +17,7 @@ class CreatePostPage extends StatefulWidget {
 class _CreatePostPageState extends State<CreatePostPage> {
   final TextEditingController _captionController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
-  final PostService _postService = PostService();
+  final PostService _postService = PostService.instance;
 
   Uint8List? _mediaBytes;
 

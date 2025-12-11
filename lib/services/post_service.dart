@@ -1,10 +1,15 @@
 // lib/services/post_service.dart
+import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/post_model.dart';
 
 class PostService {
+  PostService._();
+  static final instance = PostService._();
+
   final SupabaseClient _client = Supabase.instance.client;
 
   /// Creates a post:
@@ -53,7 +58,7 @@ class PostService {
     };
 
     // debug log so you can inspect
-    print('PostService.createPost -> inserting: $insertData');
+    if (kDebugMode) print('PostService.createPost -> inserting: $insertData');
 
     final res = await _client
         .from('post')
@@ -76,7 +81,7 @@ class PostService {
 
     final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
     final filePath = '$userId/$fileName'; // posts/<userId>/file.ext
-    print('Uploading media to: $filePath');
+    if (kDebugMode) print('Uploading media to: $filePath');
 
     final resp = await bucket.uploadBinary(
       filePath,
@@ -87,11 +92,67 @@ class PostService {
       ),
     );
 
-    // uploadBinary either throws on failure or returns success response
-    print('Uploaded media path: $filePath (upload response: $resp)');
+    if (kDebugMode) print('Uploaded media path: $filePath (upload response: $resp)');
 
     // If your bucket is private and you need signed url, change this to createSignedUrl
     final public = bucket.getPublicUrl(filePath);
     return public;
+  }
+
+  // -------------------------
+  // Likes RPC
+  // -------------------------
+
+  /// Calls the RPC toggle_like_rpc(p_post_id) which toggles like for the
+  /// currently authenticated user. Server reads auth.uid().
+  ///
+  /// Returns 'liked' or 'unliked' on success, null on error.
+  Future<String?> toggleLikeRpc({ required int postId }) async {
+    try {
+      // Call RPC. Different SDK versions return different shapes:
+      // - Map<String,dynamic>
+      // - List<Map<String,dynamic>> with one element
+      // - sometimes a raw JSON string
+      final rpcRaw = await _client.rpc('toggle_like_rpc', params: {'p_post_id': postId});
+
+      dynamic payload = rpcRaw;
+      if (rpcRaw is List && rpcRaw.isNotEmpty) {
+        payload = rpcRaw.first;
+      }
+
+      if (payload == null) return null;
+
+      if (payload is Map<String, dynamic>) {
+        final action = payload['action'];
+        if (action is String) return action;
+        // sometimes jsonb comes back as nested map under 'toggle_like_rpc' key; try to find
+        for (final v in payload.values) {
+          if (v is Map && v.containsKey('action')) {
+            final a = v['action'];
+            if (a is String) return a;
+          }
+        }
+        return null;
+      }
+
+      if (payload is String) {
+        // attempt to parse JSON string
+        try {
+          final decoded = jsonDecode(payload);
+          if (decoded is Map && decoded['action'] is String) {
+            return decoded['action'] as String;
+          }
+        } catch (_) {
+          return null;
+        }
+      }
+
+      return null;
+    } catch (e, st) {
+      if (kDebugMode) {
+        print('[PostService.toggleLikeRpc] error: $e\n$st');
+      }
+      return null;
+    }
   }
 }

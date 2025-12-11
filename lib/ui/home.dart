@@ -1,19 +1,42 @@
 // lib/ui/home.dart
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/feed_service.dart';
+import '../services/post_service.dart';
 // import '../models/post_model.dart';
 import 'common_widget.dart';
 
-// Reuse your PostCard and StoryCircle widgets but modified to accept models.
-// For clarity I keep small copies here adapted for FeedPost/StoryGroup usage.
-// You can replace these with your existing ones if you want.
-
-class PostCardWidget extends StatelessWidget {
+class PostCardWidget extends StatefulWidget {
   final FeedPost feedPost;
 
   const PostCardWidget({super.key, required this.feedPost});
+
+  @override
+  State<PostCardWidget> createState() => _PostCardWidgetState();
+}
+
+class _PostCardWidgetState extends State<PostCardWidget> {
+  late bool _isLiked;
+  late int _likesCount;
+  bool _inFlight = false;
+
+  String? get _currentUserId => Supabase.instance.client.auth.currentUser?.id;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Seed values from FeedPost model (Post has likesCount)
+    final p = widget.feedPost.post;
+    _likesCount = p.likesCount;
+
+    // We don't have likedBy in Post model, so start as not liked.
+    // If you later add a liked_by column to the returned payload, you can
+    // set initial liked state here by checking that array.
+    _isLiked = false;
+  }
 
   String _timeAgo(DateTime dt) {
     final diff = DateTime.now().difference(dt);
@@ -24,8 +47,60 @@ class PostCardWidget extends StatelessWidget {
     return DateFormat.yMMMd().format(dt);
   }
 
+  Future<void> _onLikeTap() async {
+    final cur = _currentUserId;
+    if (cur == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please log in to like posts')),
+      );
+      return;
+    }
+
+    if (_inFlight) return;
+
+    // optimistic update
+    setState(() {
+      _inFlight = true;
+      _isLiked = !_isLiked;
+      _likesCount = _isLiked ? _likesCount + 1 : (_likesCount - 1 >= 0 ? _likesCount - 1 : 0);
+    });
+
+    final action = await PostService.instance.toggleLikeRpc(postId: widget.feedPost.post.id);
+
+    if (action == null) {
+      // rollback on error
+      if (!mounted) return;
+      setState(() {
+        _isLiked = !_isLiked;
+        _likesCount = _isLiked ? _likesCount + 1 : (_likesCount - 1 >= 0 ? _likesCount - 1 : 0);
+        _inFlight = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not update like. Please try again.')),
+      );
+      return;
+    }
+
+    // Server says 'liked' or 'unliked'. Reconcile minimal state.
+    if (!mounted) return;
+    setState(() {
+      if (action == 'liked') {
+        _isLiked = true;
+      } else if (action == 'unliked') {
+        _isLiked = false;
+        // ensure no negative counts
+        if (_likesCount < 0) _likesCount = 0;
+      }
+      _inFlight = false;
+    });
+
+    // If you want authoritative counts, subscribe to realtime post stream or re-fetch the post.
+  }
+
   @override
   Widget build(BuildContext context) {
+    final feedPost = widget.feedPost;
     final p = feedPost.post;
     final u = feedPost.user;
     final preview = p.media.isNotEmpty ? p.media : '';
@@ -56,7 +131,6 @@ class PostCardWidget extends StatelessWidget {
                         fontSize: 16,
                       ),
                     ),
-                    // optional: show full name or nothing
                     if (u.fullName.isNotEmpty && u.username.isNotEmpty)
                       Text(
                         u.fullName,
@@ -86,9 +160,12 @@ class PostCardWidget extends StatelessWidget {
           const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6),
           child: Row(
             children: [
+              // Like button wired up
               IconButton(
-                icon: const Icon(Icons.favorite_border),
-                onPressed: () {},
+                icon: _inFlight
+                    ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                    : Icon(_isLiked ? Icons.favorite : Icons.favorite_border, color: _isLiked ? Colors.red : Colors.black),
+                onPressed: _onLikeTap,
               ),
               IconButton(
                 icon: const Icon(Icons.mode_comment_outlined),
@@ -109,7 +186,7 @@ class PostCardWidget extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12.0),
           child: Text(
-            "${p.likesCount} likes",
+            "$_likesCount likes",
             style: const TextStyle(fontWeight: FontWeight.bold),
           ),
         ),
@@ -150,6 +227,9 @@ class PostCardWidget extends StatelessWidget {
     );
   }
 }
+
+// StoryCircleWidget and HomePage remain unchanged from your original file.
+// (I left them as-is — only PostCardWidget swapped to stateful + like logic)
 
 class StoryCircleWidget extends StatelessWidget {
   final FeedUser user;
@@ -204,6 +284,7 @@ class StoryCircleWidget extends StatelessWidget {
   }
 }
 
+// HomePage unchanged — it will render the updated PostCardWidget.
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -234,15 +315,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _openStoryGroup(StoryGroup group) async {
-    // mark all posts in this story group as seen (best-effort)
     for (final p in group.stories) {
       try {
         await FeedService.instance.markStorySeen(postId: p.id);
       } catch (_) {}
     }
 
-    // For now just show a simple page that displays the first story image
-    // You can replace this with a true story viewer (timers, swiping).
     if (group.stories.isEmpty) return;
     final first = group.stories.first;
     Navigator.push(
@@ -258,7 +336,6 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
-    // After return, refresh stories to update seen state
     setState(() {
       _storiesFuture = FeedService.instance.getStories(limitPerUser: 10);
     });
@@ -314,7 +391,6 @@ class _HomePageState extends State<HomePage> {
                       itemCount: groups.length,
                       itemBuilder: (context, index) {
                         final g = groups[index];
-                        // Determine unseen state: naive, you can improve by using story_views
                         final hasUnseen = true;
                         return StoryCircleWidget(
                           user: g.user,
