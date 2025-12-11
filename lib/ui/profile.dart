@@ -7,6 +7,9 @@ import '../services/profile_services.dart';
 import 'package:instagram/models/profile_model.dart';
 import 'common_widget.dart';
 
+// New import for chat screen
+import 'chat_screen.dart';
+
 class ProfilePage extends StatefulWidget {
   /// `userId` is the auth_id of the user to view.
   /// If null, we show the currently logged-in user's profile.
@@ -225,7 +228,16 @@ class _ProfilePageState extends State<ProfilePage> {
                             child: _isSelfProfile
                                 ? ElevatedButton(
                               onPressed: () {
-                                // TODO: navigate to "Edit profile" page
+                                // lightweight placeholder Edit profile screen (won't crash)
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => Scaffold(
+                                      appBar: AppBar(title: const Text('Edit profile')),
+                                      body: const Center(child: Text('Edit profile: TODO')),
+                                    ),
+                                  ),
+                                );
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.grey[300],
@@ -245,8 +257,7 @@ class _ProfilePageState extends State<ProfilePage> {
                               child: const Text('...'),
                             )
                                 : StreamBuilder<bool>(
-                              stream: ProfileService.instance
-                                  .isFollowingStream(
+                              stream: ProfileService.instance.isFollowingStream(
                                 currentUserId: _currentUserId!,
                                 targetUserId: _profileOwnerId!,
                               ),
@@ -310,7 +321,23 @@ class _ProfilePageState extends State<ProfilePage> {
                             Expanded(
                               child: OutlinedButton(
                                 onPressed: () {
-                                  // TODO: open DM / message
+                                  // Open chat screen with the profile owner
+                                  if (_currentUserId == null || _profileOwnerId == null) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('Could not open chat')),
+                                    );
+                                    return;
+                                  }
+
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => ChatScreen(
+                                        meId: _currentUserId!,
+                                        otherId: _profileOwnerId!,
+                                      ),
+                                    ),
+                                  );
                                 },
                                 style: OutlinedButton.styleFrom(
                                   side: const BorderSide(color: Colors.grey),
@@ -362,9 +389,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                   ),
                                   const SizedBox(height: 6),
                                   Text(
-                                    h.caption.isNotEmpty
-                                        ? h.caption
-                                        : 'Highlight ${index + 1}',
+                                    h.caption.isNotEmpty ? h.caption : 'Highlight ${index + 1}',
                                     style: const TextStyle(fontSize: 12),
                                     overflow: TextOverflow.ellipsis,
                                   ),
@@ -390,8 +415,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                 )
                     : SliverGrid(
-                  gridDelegate:
-                  const SliverGridDelegateWithFixedCrossAxisCount(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 3,
                     mainAxisSpacing: 2,
                     crossAxisSpacing: 2,
