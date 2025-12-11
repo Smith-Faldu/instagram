@@ -1,5 +1,6 @@
 // lib/services/profile_services.dart
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -283,4 +284,92 @@ class ProfileService {
     // assume direct URL
     return value;
   }
+// -------------------------
+// ADDED: Helpers required by EditProfilePage
+// -------------------------
+
+  /// Returns the raw user row for the currently authenticated user, or null.
+  Future<Map<String, dynamic>?> getCurrentUserRow() async {
+    final user = _client.auth.currentUser;
+    if (user == null) return null;
+
+    final res = await _client
+        .from('user')
+        .select()
+        .eq('auth_id', user.id)
+        .maybeSingle();
+
+    if (res == null) return null;
+    return Map<String, dynamic>.from(res as Map);
+  }
+
+  /// Uploads avatar image to 'avatar' bucket and returns public URL (or null on error).
+  Future<String?> uploadAvatar({
+    required String userId,
+    required Uint8List bytes,
+    String ext = 'jpg',
+  }) async {
+    try {
+      // IMPORTANT: your bucket name is "avatar", not "avatars".
+      final bucket = _client.storage.from('avatar');
+
+      final fileName = 'avatar_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      final path = '$userId/$fileName';
+
+      if (kDebugMode) {
+        print('[ProfileService.uploadAvatar] uploading -> $path');
+      }
+
+      // Upload
+      await bucket.uploadBinary(
+        path,
+        bytes,
+        fileOptions: FileOptions(
+          contentType: 'image/$ext',
+          upsert: true,
+        ),
+      );
+
+      // Get public URL
+      final publicUrl = bucket.getPublicUrl(path);
+
+      if (kDebugMode) {
+        print('[ProfileService.uploadAvatar] publicUrl -> $publicUrl');
+      }
+
+      return publicUrl;
+    } catch (e, st) {
+      debugPrint('[ProfileService.uploadAvatar] error: $e\n$st');
+      return null;
+    }
+  }
+
+  /// Update profile fields in the `user` table. Returns updated row or null.
+  Future<Map<String, dynamic>?> updateProfile({
+    required Map<String, dynamic> fields,
+  }) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    // Prevent accidental password updates
+    fields.remove('password');
+
+    final res = await _client
+        .from('user')
+        .update(fields)
+        .eq('auth_id', user.id)
+        .select()
+        .maybeSingle();
+
+    if (res == null) return null;
+    return Map<String, dynamic>.from(res as Map);
+  }
+
+} // end ProfileService
+
+/// Alias class so existing code using `ProfileServices.instance` keeps working.
+/// This simply reuses the same singleton instance above.
+class ProfileServices {
+  ProfileServices._();
+  static final instance = ProfileService.instance;
 }

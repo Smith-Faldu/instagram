@@ -6,7 +6,7 @@ import '../services/auth_gate.dart'; // your signOut is here
 import '../services/profile_services.dart';
 import 'package:instagram/models/profile_model.dart';
 import 'common_widget.dart';
-
+import 'package:instagram/ui/edit_profile_page.dart';
 // New import for chat screen
 import 'chat_screen.dart';
 
@@ -232,10 +232,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) => Scaffold(
-                                      appBar: AppBar(title: const Text('Edit profile')),
-                                      body: const Center(child: Text('Edit profile: TODO')),
-                                    ),
+                                    builder: (_) => const EditProfilePage(),
                                   ),
                                 );
                               },
